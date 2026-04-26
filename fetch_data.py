@@ -54,6 +54,7 @@ DB_PATH    = "energy_data.db"
 PNODE_ID   = 1067164095
 PNODE_NAME = "NINEMILE"
 API_BASE   = "https://api.pjm.com/api/v1/rt_hrl_lmps"
+WEATHER_BASE = "https://archive-api.open-meteo.com/v1/archive"
 
 FIELDS = (
     "datetime_beginning_utc,"
@@ -96,6 +97,15 @@ def init_db():
             end_date        TEXT,
             status          TEXT,
             message         TEXT
+        )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS weather_data (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        datetime_ept TEXT UNIQUE,
+        temp_f       REAL,
+        fetched_at   TEXT
         )
     """)
 
@@ -157,6 +167,64 @@ def fetch_lmp(start_date: str, end_date: str) -> pd.DataFrame:
 
     return df
 
+# ── WEATHER ───────────────────────────────────────────────────────────────────
+
+def fetch_weather(start_date: str, end_date: str) -> pd.DataFrame:
+    params = {
+        "latitude":        43.45,
+        "longitude":       -76.51,
+        "start_date":      start_date,
+        "end_date":        end_date,
+        "hourly":          "temperature_2m",
+        "timezone":        "America/New_York",
+        "temperature_unit": "fahrenheit",
+    }
+
+    print(f"[WEATHER] Fetching temperature: {start_date} → {end_date} ...")
+
+    response = requests.get(
+        "https://archive-api.open-meteo.com/v1/archive",
+        params=params,
+        timeout=30
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    times  = data["hourly"]["time"]
+    temps  = data["hourly"]["temperature_2m"]
+
+    df = pd.DataFrame({"datetime_ept": times, "temp_f": temps})
+    df["datetime_ept"] = pd.to_datetime(df["datetime_ept"])
+
+    print(f"[WEATHER] Got {len(df)} hourly records.")
+    return df
+
+def save_weather_to_db(df: pd.DataFrame) -> int:
+    if df.empty:
+        return 0
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    inserted = 0
+    now = datetime.now().isoformat()
+
+    for _, row in df.iterrows():
+        try:
+            cursor.execute("""
+                INSERT INTO weather_data (datetime_ept, temp_f, fetched_at)
+                VALUES (?, ?, ?)
+            """, (
+                str(row["datetime_ept"]),
+                row["temp_f"],
+                now
+            ))
+            inserted += 1
+        except sqlite3.IntegrityError:
+            pass
+
+    conn.commit()
+    conn.close()
+    return inserted
 
 # ── Database operations ───────────────────────────────────────────────────────
 def save_to_db(df: pd.DataFrame) -> int:
@@ -270,6 +338,10 @@ def main():
     print("\n[STATS]")
     for k, v in stats.items():
         print(f"  {k}: {v}")
+
+    weather_df = fetch_weather(start_str, end_str)
+    weather_added = save_weather_to_db(weather_df)
+    print(f"[DB] Saved {weather_added} weather records.")
 
     print("\nDone. Next: python model.py")
 
