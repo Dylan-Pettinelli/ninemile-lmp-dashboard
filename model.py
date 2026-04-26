@@ -93,7 +93,7 @@ FEATURE_COLS = [
     "month_sin", "month_cos",
     "day_of_week", "is_weekend", "is_business_hours",
     "lag_1h", "lag_24h", "lag_168h",
-    "rolling_mean_24h", "rolling_std_24h", "rolling_mean_7d",
+    "rolling_mean_24h", "rolling_std_24h", "rolling_mean_7d", "temp_f",
 ]
 TARGET_COL = "demand_mwh"
 
@@ -211,6 +211,7 @@ def forecast_next_24h(df: pd.DataFrame) -> pd.DataFrame:
 
     # Build features on historical data
     featured = build_features(df)
+    avg_temp = df["temp_f"].mean() if "temp_f" in df.columns else 32.0
 
     # Iteratively predict the next 24 hours
     last_ts = pd.to_datetime(featured["timestamp"].iloc[-1])
@@ -237,6 +238,7 @@ def forecast_next_24h(df: pd.DataFrame) -> pd.DataFrame:
             "rolling_mean_24h":  np.mean(history[-24:]),
             "rolling_std_24h":   np.std(history[-24:]),
             "rolling_mean_7d":   np.mean(history[-168:]) if len(history) >= 168 else np.mean(history),
+            "temp_f": avg_temp,
         }
 
         X_row = np.array([[row[f] for f in FEATURE_COLS]])
@@ -259,10 +261,16 @@ def main():
 
     # Load data from DB
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query(
-        "SELECT datetime_utc AS timestamp, total_lmp_rt AS demand_mwh FROM lmp_data ORDER BY datetime_utc ASC",
-        conn
-    )
+    df = pd.read_sql_query("""
+        SELECT 
+            l.datetime_utc AS timestamp,
+            l.total_lmp_rt AS demand_mwh,
+            w.temp_f
+        FROM lmp_data l
+        JOIN weather_data w ON l.datetime_ept = w.datetime_ept
+        ORDER BY l.datetime_utc ASC
+    """, conn)
+
     conn.close()
     df["timestamp"] = pd.to_datetime(df["timestamp"])
 
